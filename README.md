@@ -1,1 +1,1 @@
-# Data-Visualization-for-RNA-seq-data-analysis-of-Xenopus-Brain-Development
+# Data-Visualization-for-RNA-seq-of-Xenopus-Brain-Development
