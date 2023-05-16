@@ -19,12 +19,16 @@ We're looking at the gene expression of the *Xenopus laevis*'s midbrain region a
 ### Data Visualization techniques
 Data visualization allow us to comprehend the data as well as extract insightful trend, knowledge, and pattern from it, especially from 250,000+ datapoints. For this project, we'll use the following data visualizations techniques:
 
-1. Boxplot:
-2. PCA:
-3. Volcano Plot:
-4. Heatmap: 
+1. *Boxplot*: To represent the distribution of
+    * Raw counts before and after TPM, log-transformed, which illustrate the need for gene count normalization
+    * Principal Component (PC) scores (PC1 and PC2) in relation to the midbrain developmental stages.
+2. *PCA*: Form clusters/groups of the three midbrain developmental stages: Early, Middle, and Late
+3. *Volcano Plot*: Identify statistically significant, differentially expressed genes that are up- or down-regulated between the middle and late midbrain developmental stages
+4. *Heatmap*: Display the expression levels of the top 10 most statistically significant genes and the patterns between the middle and late developmental stages
+ 
 
 ### Results
+Through the data visualizations, we are able to
 
-
-### Going forward
+1. Obtain a clear separation between the three developmental stages: Early, Middle, and Late using PCA 
+2. Discover that the top 10 statistcally significant genes are down-regulated in the late developmental stages
