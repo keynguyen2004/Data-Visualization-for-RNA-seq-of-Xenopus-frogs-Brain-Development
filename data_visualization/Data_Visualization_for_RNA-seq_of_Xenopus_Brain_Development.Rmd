@@ -1,0 +1,515 @@
+---
+title: "Data_Visualization_for_RNA-seq_of_Xenopus_Brain_Development"
+output:
+  pdf_document: default
+  html_document: default
+date: "2023-05-06"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+\
+
+## 1. Load packages
+Install and load the necessary packages (e.g., tidyverse, DESeq2, EnhancedVolcano).
+
+```{r, message = FALSE, warning = FALSE}
+
+if (!require("pacman")) install.packages("pacman")     # Install pacman package if not already
+
+# Use p_load() function to install packages that aren't already and load all packages
+pacman::p_load(tidyverse, reader, ggrepel, DESeq2, apeglm, EnhancedVolcano, pheatmap, grid, gridExtra)     
+```
+
+\
+
+## 2. Import data sets
+Load the frog brain development raw gene count and sample metadata. The data sets are provided by Dr. Rebecca L. Young.
+
+```{r, message = FALSE}
+# Import raw read counts
+raw_counts <- read.table(file = "/stor/work/Bio321G_RY_Spring2023/Exercises/frog_brain_developmentalExp/XlaevMidBrain_counts.csv",
+                         row.names = 1,   # Assign 1st column as row names
+                                          # Row names shouldn't contain duplicates
+                         header = TRUE,   # Use 1st row of the data frame as column headers
+                         sep = ",")       # Separate all data between columns by the ","
+
+
+# Import gene lengths
+gene_lengths <- read.table(file = "/stor/work/Bio321G_RY_Spring2023/Exercises/frog_brain_developmentalExp/Gene_lengths.csv",
+                         header = TRUE,   # Use 1st row of the data frame as column headers
+                         sep = ",")      
+
+
+# Import metadata
+metadata <- read.table(file = "/stor/work/Bio321G_RY_Spring2023/Exercises/frog_brain_developmentalExp/frogbrain_metadata.csv", 
+                       header = TRUE, 
+                       sep = ",")
+```
+
+\
+
+## 3. Data Transformation
+
+
+Typically, RNA sequencing studies aim to compare gene expression within or across samples. For example, studies may aim to quantify 
+
+1. The relative expression of genes within an individual  
+2. How gene expression differs between samples (e.g., experimental treatments, across stages of development, or populations or species). 
+
+**Normalization** is required to account for factors that prevent these within and across species comparisons. 
+
+The main factors often considered during normalization are:
+
+1. *Gene length*: Accounting for gene length is necessary for **comparing expression between different genes within the same sample**. In the example below, what is the relative expression of these three genes in Sample 1? Gene A has the highest read count at 24 reads; however, it is twice as long as Gene C. Why would that matter? In principle, reads can map to any fragment of the gene, Gene A has twice as many targets for sequencing. Thus, to compare across genes, reads must be normalized by length.
+
+The relative expression of these genes is: A = C > B
+
+2. *Sequencing depth*: Accounting for sequencing depth is necessary for **comparison of gene expression between samples**. In the example below, let’s compare expression of Gene A between our two samples. Samples 1 and 2 have 24 and 50 reads of Gene A, respectively. We might think the expression of Gene A in Sample 2 is more than double that of Sample 1. However, if we taken into account of sequencing depth, Gene A in Sample 1 has 24/48(total reads) and in Sample 2 has 50/96. Therefore, Sample 2 exhibits only slightly higher expression of Gene A.
+
+
+![](/stor/work/Bio321G_RY_Spring2023/StudentDirectories/KyNguyen/ProblemSet3/Images/Raw_Gene_Count.png)
+
+\
+
+A normalization technique called TPM (transcripts per kilobase million)	is suitable for both (1) gene count comparisons within a sample or (2) between samples of the same sample group, but NOT for differential gene expression (DGE) analysis
+
+
+```{r}
+# TPM calculation function
+TPM <- function(counts, lengths){
+  reads_per_kilobase <- counts/(lengths/1000)   # Divide length by 1000 to convert to kilobase
+  per_million <- sum(reads_per_kilobase, na.rm = TRUE)/1e6  # Total read in sample and divide by 10^6 (a million)
+  tpms <- reads_per_kilobase/per_million   # Total reads in a million base (that contain other bases as well)
+                                           # Last expression, which is the tpms, is the return value
+}
+
+
+# Loop the function to calculate TPMs across all samples
+tpms <- raw_counts
+for (i in 1:ncol(tpms)){
+  tpms[,i] <- TPM(tpms[,i], gene_lengths$length)
+}
+
+# Filtering genes with zero counts
+tpms<- tpms %>%
+  mutate(total_count = rowSums(across(where(is.numeric)))) %>%
+  filter(total_count != 0) %>%    # the != indicates that we want to keep rows that do not equal zero
+  dplyr::select(-total_count)    # now that we have filtered we no longer need this column
+
+# Keep another copy of raw_counts without genes that have 0 counts for later plotting
+raw_counts <- raw_counts[rownames(raw_counts) %in% rownames(tpms), ]   
+
+# Log transform the tpms
+log_tpms<- log(tpms)         # New dataframe with log transformed tpms
+log_tpms[!is.finite(as.matrix(log_tpms))] <- 0     # log(0) = -inf, so replace -inf values with 0
+
+
+# Group the samples into early, middle, and late groups
+metadata <- metadata %>%
+  mutate(grouped_stage = case_when(stage == "Stage44" ~ 'early',
+                                   stage == "Stage46" ~ 'early',
+                                   stage == "Stage49" ~ 'middle',
+                                   stage == "Stage55" ~ 'middle',
+                                   stage == "Stage61" ~ 'late',
+                                   stage == "Stage66" ~ 'late'))
+
+
+# Specify factors level so that plotting & legend would follow the order
+# early -> middle -> late. Without this, the plots & legends will be in
+# alphabetical order (i.e., early -> late -> middle)
+metadata$grouped_stage <- factor(metadata$grouped_stage, levels = c("early", "middle", "late")) 
+```
+
+\
+
+## 4. Visualization of gene counts
+
+To further illustrate the need for normalization, we can plot the distribution of the counts. *Note*: for visualiztaion purposes, we are log2 transforming our data. Because log of 0 is undefined, we add 1 to all entries.
+
+\ 
+
+##### **4.a. Distribution of raw counts**
+
+```{r}
+par(cex.axis = 0.45)  # Reduce y-axis label size to include all sample names
+boxplot(log(raw_counts + 1, 2), 
+        xlab = "samples", 
+        ylab = "Log2 counts",
+        notch = TRUE)
+```
+
+\
+
+##### **4.b. Distribution of TPM normalized counts**
+
+```{r}
+par(cex.axis = 0.45)
+boxplot(log(tpms + 1, 2), 
+        xlab = "samples", 
+        ylab = "Log2 counts",
+        notch = TRUE)
+```
+
+\
+By comparing the two boxplots, we can see that TPM calculation worked well to normalize the expression patterns of all genes across samples as the distribution of the counts are more identical, allowing us to compare the genes across samples better. One sample - `MB49_II` - looks a little different than the rest. For now we will keep this sample in our data set. However, if we find this sample has anomalous patterns in downstream analyses we can revisit this.
+
+\
+
+## 5. Principal Component Analysis (PCA)
+
+\
+
+##### **5.a. Calculate the PCs**
+
+```{r, message = FALSE}
+x <- log_tpms %>% 
+  t()   # Transpose matrix
+
+# Calculate the principal components of the data set
+PC_x <- prcomp(x) 
+
+# Create a new data frame with the sample_id, principal components, and metadata
+PCs_x <- data.frame(PC_x$x) %>%
+  rownames_to_column(var = "sample_id")   # make sample IDs a column to facilitate adding other metadata
+
+PCs_x <- left_join(PCs_x, metadata)
+
+head(PCs_x, 10)
+```
+
+\
+
+##### **5.b. Anomaly Detection**
+
+We'll quickly plot a PCA (of PC1 and PC2) to determine if there's any particular anomaly
+
+```{r, warning = FALSE}
+ggplot(data = PCs_x, aes(x = PC1, y = PC2, color = stage, label = sample_id)) +
+  geom_point(size = 4) +
+  geom_text_repel() +
+  theme_classic(base_family = "Times", 
+                base_size = 14)
+```
+
+\
+
+This confirm the visualization in section 4 where the anomalous sample is `MB49_II`, indeed. Let's remove it and recalculate the PCs
+
+```{r, message = FALSE}
+# Remove anomaly
+log_tpms_no_outlier <- log_tpms %>%
+  dplyr::select(-MB49_II)
+
+x_no_outlier <- log_tpms_no_outlier %>% 
+  t()   # Transpose matrix
+
+# Calculate the principal components of the data set
+PC_x_no_outlier <- prcomp(x_no_outlier) 
+
+# Create a new data frame with the sample_id, principal components, and metadata
+PCs_x_no_outlier <- data.frame(PC_x_no_outlier$x) %>%
+  rownames_to_column(var = "sample_id")   # make sample IDs a column to facilitate adding other metadata
+
+PCs_x_no_outlier <- left_join(PCs_x_no_outlier, metadata)
+
+head(PCs_x_no_outlier, 10)
+```
+
+\
+
+##### **5.c. Scree Plot**
+
+A scree plot shows how much variation each PC captures from the data. It can be treated as a diagnostic tool to check whether PCA works well on your data or not. Ideally, the selected PCs should be able to describe at least 80% of the variance.
+
+```{r, fig.height = 6}
+var_explained_no_outlier <- data.frame(PC = paste0("PC", 1:ncol(PC_x_no_outlier$x)),
+                                       var_explained_no_outlier = (PC_x_no_outlier$sdev)^2/sum((PC_x_no_outlier$sdev)^2))
+
+PC1to9_Var <- var_explained_no_outlier[1:9,] 
+
+ggplot(PC1to9_Var, aes(x= PC, y = var_explained_no_outlier * 100, group = 1)) + 
+  geom_point(size = 4) +
+  geom_line() +
+  geom_text(aes(label = round(var_explained_no_outlier, 4)*100, vjust = -1)) +
+  labs(title = "Scree plot", y = "Percentage variation explained", x = "PC Scores") + 
+  theme_classic(base_family = "Times", 
+                base_size = 14)
+```
+
+We can see that the top three PCs explain just above 50% of the variation. Although it's not the ideal the proportion of variance retained, we'll stick with it for now and see how the PCA work out.
+
+\
+
+##### **5.d. PCA**
+Once the outlier is removed, run a principal components analysis (PCA) on the normalized and log transformed data. Plot the PC2 on PC1 as a scatter plot.
+
+
+```{r, message = FALSE, fig.height = 5, fig.width = 15}
+# Plot the PC1 and PC2 - use early, middle, and late
+pca1 <- ggplot(data = PCs_x_no_outlier, 
+               aes(x = PC1, y = PC2, color = grouped_stage, label = sample_id)) +
+          labs(title = "PCA of frog brain development stages",
+               x = "PC1: 34.76%",
+               y = "PC2: 10.64%") +
+          geom_point(size = 2) +
+          geom_hline(yintercept = 0, linetype = "dotted") +
+          geom_vline(xintercept = 0, linetype = "dotted") +
+          geom_text_repel(box.padding = 0.75,     # Avoid overlapping text
+                          max.overlaps = Inf,
+                          segment.size = .25,
+                          segment.alpha = .8,
+                          force = 1) + 
+          scale_color_brewer(palette = "GnBu") +  # Set color palette (color is for scatter plot)
+          scale_colour_hue(l = 60) +              # Darken color
+          scale_x_continuous(expand = expansion(mult = 0.5)) +      # Expand x scale of the figure
+          scale_y_continuous(expand = expansion(mult = 0.25)) +     # Expand y scale of the figure
+          theme_light()
+
+# Plot the PC2 and PC3 - use early, middle, and late
+pca2 <- ggplot(data = PCs_x_no_outlier, 
+               aes(x = PC2, y = PC3, color = grouped_stage, label = sample_id)) +
+          labs(title = "PCA of frog brain development stages",
+               x = "PC2: 10.64%",
+               y = "PC3: 7,89%") +
+          geom_point(size = 2) +
+          geom_hline(yintercept = 0, linetype = "dotted") +
+          geom_vline(xintercept = 0, linetype = "dotted") +
+          geom_text_repel(box.padding = 0.75,     # Avoid overlapping text
+                          max.overlaps = Inf,
+                          segment.size = .25,
+                          segment.alpha = .8,
+                          force = 1) + 
+          scale_color_brewer(palette = "GnBu") +  # Set color palette (color is for scatter plot)
+          scale_colour_hue(l = 60) +              # Darken color
+          scale_x_continuous(expand = expansion(mult = 0.5)) +      # Expand x scale of the figure
+          scale_y_continuous(expand = expansion(mult = 0.25)) +     # Expand y scale of the figure
+          theme_light()
+
+# Set {r, fig.height = 3, fig.width = 10}
+grid.arrange(pca1, pca2, ncol = 2)
+```
+
+\
+
+We can see that the plot with PC1 and PC2 do a much better job at forming clusters for the three brain development stages
+
+\
+
+## 6. Boxplot
+
+Plot the PC1 and PC2 as a boxplot. Groups on the x-axis, PC1 and PC2 on the y-axis, and make the plot consistent with the color/theme and general aesthetics of the scatter plot for better visualization.
+
+```{r, message = FALSE, warning = FALSE, fig.height = 5, fig.width = 12.5}
+# PC1 boxplot
+boxplot1 <- ggplot(data = PCs_x_no_outlier, 
+                   aes(x = grouped_stage, y = PC1, fill = grouped_stage)) + 
+  ylim(-40, 65) +
+  geom_boxplot(width = 0.5) +
+  geom_point(size = 2) +
+  labs(title = "PC1 of frog brain development stages",
+       x = "Development stage",
+       y = "PC1") +   
+  theme_light() + 
+  scale_fill_brewer(palette = "GnBu") +   # Set color palette (fill is for boxplot)
+  scale_colour_hue(l = 60) +              # Darken the color
+  stat_boxplot(geom = "errorbar", width = 0.2)        # Add whiskers to the boxplot
+
+# PC2 boxplot
+boxplot2 <- ggplot(data = PCs_x_no_outlier,
+                   aes(x = grouped_stage, y = PC2, fill = grouped_stage)) + 
+  ylim(-40, 65) +
+  geom_boxplot(width = 0.5) +
+  geom_point(size = 2) +
+  labs(title = "PC2 of frog brain development stages",
+       x = "Development stage",
+       y = "PC2") +   
+  theme_light() + 
+  scale_fill_brewer(palette = "GnBu") +   # Set color palette (fill is for boxplot)
+  scale_colour_hue(l = 60) +              # Darken the color
+  stat_boxplot(geom = "errorbar", width = 0.2)        # Add whiskers to the boxplot
+
+# Set {r, fig.height = 5, fig.width = 10}
+grid.arrange(boxplot1, boxplot2, ncol = 2)
+```
+
+\
+
+
+
+\
+
+## 7. Differential gene expression (DGE) analysis
+
+Using the raw counts data frame, perform a differential expression analysis comparing middle and late groups. Perform the analysis so that late is the numerator and middle is the denominator.
+
+\
+
+##### **7.a. Data transformation**
+
+```{r, message = FALSE}
+# Remove anomalous sample
+raw_counts_noOutlier <-raw_counts %>%
+  dplyr::select(-MB49_II)
+
+# Limit the metadata table to the samples we will include in the DESeq2 analysis 
+# and make sure the samples are listed in the same order
+samples <- data.frame(sample_id = colnames(raw_counts_noOutlier))
+samples_metadata <- left_join(samples, metadata)
+```
+
+Create a sample table with the conditions to be compared
+
+```{r}
+sampleTable <- data.frame(time = samples_metadata$grouped_stage) 
+rownames(sampleTable) <- samples_metadata$sample_id
+
+
+# Ensure the order of samples is the same (i.e., return TRUE)
+identical(rownames(sampleTable), colnames(raw_counts_noOutlier))
+
+# Replace the sample_ids with grouped_stage for DESeq2 analysis
+colnames(raw_counts_noOutlier) <- sampleTable$time
+
+# DESeq2 requires counts to be a matrix not a data.frame
+raw_counts_noOutlier <- as.matrix(na.omit(raw_counts_noOutlier))
+
+head(raw_counts_noOutlier, 10)
+```
+
+\
+
+##### **7.b. DeSeq2**
+
+Unlike TPM normalization, DeSeq2 is a normalization technique that is suitable for gene count comparisons between samples and for DE analysis but NOT for within sample comparisons
+
+```{r DESeqDataSet}
+dds <- DESeqDataSetFromMatrix(countData = raw_counts_noOutlier,
+                              colData = sampleTable,
+                              design = ~  time)
+
+dds <- DESeq(dds)
+
+res_late_over_middle <- results(dds,
+                                contrast = c("time", "late", "middle"))
+
+summary(res_late_over_middle)
+
+resOrdered <- res_late_over_middle[order(res_late_over_middle$padj),]  # orders the output by adjusted p-value. 
+DE_late_over_middle <- as.data.frame(resOrdered)
+
+head(DE_late_over_middle, 10)
+```
+
+\
+
+## 8. Volcano plot
+
+Use EnhanceVolcano to plot adjusted p-value on Log2 Fold Difference. We'll use the default p-value cutoff 10e-6.
+
+```{r}
+EnhancedVolcano(DE_late_over_middle,
+    lab = rownames(DE_late_over_middle),
+    title = 'middle (-LFC) versus late (+LFC)',  
+    subtitle = NULL, # no need for EnhancedVolcano subtitle
+    legendLabels = c("Non-significant",
+                   "Log (base 2) FC",
+                   "adj p-value", 
+                   "adj p-value & Log (base 2) FC"), # modify labels
+    x = "log2FoldChange",
+    y = "padj",
+    xlab = "Log (base 2) fold difference",
+    ylab = "-Log (base 10) adjusted p-value",
+    xlim = c(-10,10)) # balanced x-axis around zero to see larger expression changes in either direction. 
+```
+
+\
+
+With this information, we can pinpoint, for the late stage of frog’s brain development compared to the middle stage,
+
+1. Genes that are most up-regulated: slc4a4.L, pltp.L
+2. Genes that are most down-regulated: mcm4.L, cdca7.S, zmcm3.L
+3. Genes that are most significantly differentially expressed: mcm4.L, cdca7.L
+
+
+\
+
+## 9. Heatmap
+
+Here's let's filter the differential gene expression analysis to include the top ten most significantly differentially expressed gene and plot a heatmap for those ten genes.
+
+```{r}
+# Order gene base on their padj 
+DE_late_over_middle <- arrange(DE_late_over_middle, desc("padj"))  
+
+# Filter top ten most significantly differentially expressed gene (i.e. lowest padj)
+DE_late_over_middle_top_10 <- DE_late_over_middle[1:10,]
+
+# Convert rownames to a column
+DE_late_over_middle_top_10 <- rownames_to_column(DE_late_over_middle_top_10, var = "gene_id")   
+log_tpms_no_outlier <- rownames_to_column(log_tpms_no_outlier, var = "gene_id")   # Take the normalized, log-transformed TPM with the anonalous sample remove
+
+# Join the two table together
+DE_late_over_middle_top_10 <- right_join(log_tpms_no_outlier, DE_late_over_middle_top_10, by = "gene_id")
+
+# Remove unnecessary columns for the heatmap
+DE_late_over_middle_top_10_transformed <- dplyr::select(DE_late_over_middle_top_10, -c("baseMean", "log2FoldChange", "lfcSE", "stat", "pvalue", "padj"))
+DE_late_over_middle_top_10_transformed <- column_to_rownames(DE_late_over_middle_top_10_transformed, var = "gene_id")
+DE_late_over_middle_top_10_transformed
+
+
+# Plot a basic heatmap
+pheatmap(DE_late_over_middle_top_10_transformed, main = "basic heatmap")
+```
+
+\
+
+Now, let's add more annotation to our heatmap and its axes. Furthermore, the normal convention would be plotting the samples on the horizontal axis, so we can transposed our matrix
+
+```{r}
+# Create a data frame for heatmap's row annotation (i.e. the developmental stages)
+# Firstly, set up data frame with row names as grouped stages
+row_annotation <- data.frame(stage_annotation = matrix(ncol = 1, 
+                                                       nrow = length(colnames(DE_late_over_middle_top_10_transformed))))  # No. of columns = no. of specific stages
+row.names(row_annotation) <- colnames(DE_late_over_middle_top_10_transformed)    # Assign column names (i.e., the stage) of the final df to the rownames
+
+# Now, insert values into the stage_annotation column
+row_annotation <- mutate(row_annotation, stage_annotation = case_when(
+  startsWith(row.names(row_annotation), "MB44") ~ "early",
+  startsWith(row.names(row_annotation), "MB46") ~ "early",
+  startsWith(row.names(row_annotation), "MB49") ~ "middle",
+  startsWith(row.names(row_annotation), "MB55") ~ "middle",
+  startsWith(row.names(row_annotation), "MB61") ~ "late",
+  startsWith(row.names(row_annotation), "MB66") ~ "late"
+))
+row_annotation$stage_annotation <- factor(row_annotation$stage_annotation, levels = c("early", "middle", "late")) 
+
+row_annotation
+
+# Create a data frame for heatmap's column annotation (i.e. the genes)
+col_annotation <- data.frame(expression_change = matrix(ncol = 1, nrow = 10))  # Since we're working with top 10 genes
+row.names(col_annotation) <- rownames(DE_late_over_middle_top_10_transformed)  # Assign the row names (i.e., the gene_ids) of the final df to the rownames
+col_annotation <- cbind(col_annotation, DE_late_over_middle_top_10["log2FoldChange"])
+
+# Now, insert values into the expression_change column
+col_annotation <- mutate(col_annotation, expression_change = case_when(
+  log2FoldChange > 0 ~ "up-regulated",
+  log2FoldChange < 0 ~ "down-regulated"
+))
+col_annotation <- col_annotation["expression_change"]   # Remove the log2FoldChange column
+col_annotation
+```
+\
+
+Now, let's plot our annotated heatmap
+
+```{r, fig.dim = c(10, 5)}
+pheatmap(t(DE_late_over_middle_top_10_transformed), 
+         annotation_row = row_annotation,
+         annotation_col = col_annotation, 
+         cutree_cols = 3,
+         cutree_rows = 2,
+         main = "Annotated, clusterized heatmap of top ten most significantly differentially expressed gene during middle vs. late stage")
+```
